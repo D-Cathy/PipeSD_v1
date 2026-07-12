@@ -1,0 +1,26 @@
+[
+    {
+        "task_id": 10,
+        "output_length": 512,
+        "total_time": 1054.7568638324738,
+        "output": "Cloud-only autoregressive completed under framework. Total tokens: 512",
+        "strategy": "cloud_only",
+        "avg_token_time": 0.05000000000000001,
+        "acc_ratio": 0.0,
+        "verify_spec_lengths": [],
+        "verify_accept_lengths": [],
+        "diagnostics": {}
+    },
+    {
+        "task_id": 10,
+        "output_length": 512,
+        "total_time": 579.8032891750336,
+        "output": "Cloud-only autoregressive completed under framework. Total tokens: 512",
+        "strategy": "cloud_only",
+        "avg_token_time": 0.05000000000000001,
+        "acc_ratio": 0.0,
+        "verify_spec_lengths": [],
+        "verify_accept_lengths": [],
+        "diagnostics": {}
+    }
+]

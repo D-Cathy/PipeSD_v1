@@ -1,0 +1,25 @@
+[
+    {
+        "task_id": 1,
+        "output_length": 0,
+        "total_time": 0.04556441307067871,
+        "output": "[1, 2, 3]",
+        "strategy": "vanilla",
+        "avg_token_time": 0.04,
+        "acc_ratio": 1.0,
+        "verify_spec_lengths": [
+            1,
+            1
+        ],
+        "verify_accept_lengths": [
+            1,
+            1
+        ],
+        "diagnostics": {
+            "mean_verify_spec_len": 1.0,
+            "mean_accept_len": 1.0,
+            "rollback_events": 0,
+            "rollback_rate": 0.0
+        }
+    }
+]
