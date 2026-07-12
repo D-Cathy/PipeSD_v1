@@ -1,34 +1,39 @@
-﻿# PipeSD Unified Runner
+# PipeSD Edge
 
-This folder is now the main merged code folder for speculative decoding experiments. It can run the small draft model and large target model on the same server process, while keeping the old HTTP channel as an optional deployment mode.
+Edge runs on the local computer. It owns the dataset, draft model, speculative
+state machine, network simulation, and HTTP client. It never loads a target model.
 
-## Recommended single-server run
-
-```bash
-python app/run_edge.py \
-  --deployment local \
-  --draft_model_path pre_models/path-to-small-model.gguf \
-  --target_model_path pre_models/path-to-large-model.gguf \
-  --max_generated_tokens 40
-```
-
-## Smoke test
+Install from the repository root:
 
 ```bash
-python app/run_edge.py --deployment local --mock_models --max_generated_tokens 8
+python -m pip install -r edge/requirements.txt
 ```
 
-## Legacy distributed run
-
-Start the old cloud service from `../cloud`, then run:
+Start Cloud first, then run a mock-draft communication test:
 
 ```bash
-python app/run_edge.py --deployment network --server_url http://127.0.0.1:8000
+python edge/app/run_edge.py --mock_draft --server_url http://CLOUD_HOST:8000 --max_generated_tokens 8
 ```
 
-## Main merged pieces
+Run a real draft model:
 
-- `app/run_edge.py`: unified experiment entry.
-- `core/local_models.py`: draft-model and target-verifier adapters.
-- `core/channel.py`: `LocalChannel` for in-process calls and `NetworkChannel` for the old service.
-- `families/speculative/speculative_edge.py`: algorithm runner that talks to either channel through the same interface.
+```bash
+python edge/app/run_edge.py --draft_model_path /models/draft.gguf --server_url http://CLOUD_HOST:8000
+```
+
+Use `--gamma 5` to cap the number of pending draft tokens sent in one
+verification. Generation stops on the model EOS token or at
+`--max_generated_tokens`. Results are written to `exp/results/benchmark.json`;
+official HumanEval-format completions are appended to
+`exp/results/humaneval_samples.jsonl`.
+
+HumanEval executes generated code. Only in an isolated environment, install the
+official evaluator and explicitly acknowledge execution:
+
+```bash
+python edge/tasks/evaluate_humaneval.py exp/results/humaneval_samples.jsonl --allow-code-execution
+```
+
+`--bandwidth_MBps`, `--base_latency_c`, and the channel timeout control the
+simulated link. Set `PIPE_SD_SERVER_URL` only for legacy tools; the new entry uses
+the explicit `--server_url` argument.

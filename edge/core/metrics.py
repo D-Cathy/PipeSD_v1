@@ -6,9 +6,10 @@ from typing import List, Dict, Any, Optional
 
 #它就像是守在终点线的裁判，专门负责在程序运行期间收集各种性能数字，并在最后拼装成账本。
 class MetricsCollector:
-    def __init__(self, exp_dir: str, filename: str):
+    def __init__(self, exp_dir: str, filename: str, completions_filename: str = "humaneval_samples.jsonl"):
         self.exp_dir = exp_dir
         self.saved_path = os.path.join(exp_dir, filename)
+        self.completions_path = os.path.join(exp_dir, completions_filename)
         os.makedirs(self.exp_dir, exist_ok=True)
         self.reset_sample()
 
@@ -46,7 +47,7 @@ class MetricsCollector:
 
     def save_sample_result(self, task_id: int, output_text: str, prefix_len: int, total_time: float, strategy: str):
         """编译当前 Task 的全部指标并追加保存到本地 JSON 账本"""
-        output_length = len(output_tokens) if 'output_tokens' in locals() else 0 # 柔性适配
+        output_length = int(self.current_metrics.get('output_length', 0))
         avg_token_time = float(np.mean(self.token_durations)) if self.token_durations else None
         
         acc_ratio = 0.0
@@ -57,7 +58,7 @@ class MetricsCollector:
 
         exp_result = {
             'task_id': task_id,
-            'output_length': self.current_metrics.get('output_length', 0),
+            'output_length': output_length,
             'total_time': total_time,
             'output': output_text,
             'strategy': strategy,
@@ -81,4 +82,6 @@ class MetricsCollector:
         data.append(exp_result)
         with open(self.saved_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
+        with open(self.completions_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({"task_id": task_id, "completion": output_text}, ensure_ascii=False) + "\n")
         print(f"[Core] 任务 {task_id} 指标已成功无损落盘至: {self.saved_path}")

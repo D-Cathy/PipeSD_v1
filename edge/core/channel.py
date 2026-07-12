@@ -1,5 +1,4 @@
 ﻿# core/channel.py
-import json
 import time
 import msgpack
 import requests
@@ -22,7 +21,7 @@ class BaseChannel(ABC):
 
 
 class NetworkChannel(BaseChannel):
-    """Legacy HTTP mode for the old cloud/edge split."""
+    """Production HTTP channel from the Edge host to the Cloud verifier."""
 
     def __init__(self, config):
         self.config = config
@@ -40,10 +39,14 @@ class NetworkChannel(BaseChannel):
         try:
             timeout = getattr(self.config, "timeout_s", 120)
             response = self.session.post(url, data=data, headers=headers, timeout=timeout)
-            if response.headers.get("Content-Type") == "application/msgpack":
+            if response.headers.get("Content-Type", "").split(";", 1)[0] == "application/msgpack":
                 result = msgpack.unpackb(response.content, raw=False)
             else:
                 result = response.json()
+            if response.status_code >= 400 and not isinstance(result, dict):
+                result = {"error": f"Cloud returned HTTP {response.status_code}: {result}"}
+            elif response.status_code >= 400 and "error" not in result:
+                result["error"] = f"Cloud returned HTTP {response.status_code}"
         except Exception as exc:
             result = {"error": str(exc)}
 
@@ -61,37 +64,3 @@ class NetworkChannel(BaseChannel):
     def close(self):
         self.executor.shutdown(wait=True)
         self.session.close()
-
-
-class LocalChannel(BaseChannel):
-    """Unified server mode: call the target verifier inside this Python process."""
-
-    def __init__(self, config, target_verifier):
-        self.config = config
-        self.target_verifier = target_verifier
-        self.executor = ThreadPoolExecutor(max_workers=4)
-
-    def _dispatch(self, endpoint_url, data, headers):
-        if endpoint_url.endswith("/init"):
-            payload = json.loads(data.decode("utf-8"))
-            return self.target_verifier.init_task(payload["task_id"], payload.get("tokens", []))
-        if endpoint_url.endswith("/propose"):
-            return self.target_verifier.verify_tokens(data)
-        if endpoint_url.endswith("/exit"):
-            payload = msgpack.unpackb(data, raw=False)
-            if hasattr(self.target_verifier, "exit_task"):
-                return self.target_verifier.exit_task(payload.get("task_id"))
-            return {"status": "exited", "task_id": payload.get("task_id")}
-        return {"error": f"Unknown local endpoint: {endpoint_url}"}
-
-    def submit(self, endpoint_url, data, headers=None, tag=None):
-        return self.executor.submit(self._dispatch, endpoint_url, data, headers or {})
-
-    def drain_tag(self, tag):
-        return []
-
-    def close(self):
-        self.executor.shutdown(wait=True)
-
-
-SimulationChannel = LocalChannel

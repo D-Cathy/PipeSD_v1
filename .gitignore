@@ -1,1 +1,12 @@
 pre_models/
+/edge/models/
+/cloud/pre_models/
+*.gguf
+*.whl
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+exp/
+edge/data/
+edge/exp/results/

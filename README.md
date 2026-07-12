@@ -1,50 +1,40 @@
-﻿# PipeSD
+# PipeSD_text
 
-PipeSD is a unified speculative decoding framework for small-draft and large-target models.
+PipeSD_text is a true two-machine speculative-decoding system. Edge runs the
+small draft model on a local computer; Cloud runs the large target model on a GPU
+server. HTTP is the only target-verification path.
 
-The current recommended deployment runs both models on the same server process. The previous cloud/edge HTTP split is still kept for legacy comparison experiments, but it is no longer the main path.
-
-## Repository layout
-
-- `edge/`: main merged code folder. It contains the unified runner, draft model adapters, local target verifier, channels, metrics, and speculative decoding strategies.
-- `cloud/`: legacy FastAPI target-model service for the old distributed HTTP deployment.
-
-## Recommended flow
-
-Run a smoke test without model files:
-
-```bash
-cd edge
-python app/run_edge.py --deployment local --mock_models --max_generated_tokens 8
+```text
+Edge: dataset -> draft model -> speculative state -> NetworkChannel
+                                                    |
+                       /health /init /propose /exit |
+                                                    v
+Cloud: FastAPI -> task manager -> target verifier -> GPU/energy metrics
 ```
 
-Run real single-server speculative decoding:
+## Layout
+
+- `edge/`: local-only application, draft model, algorithms, tasks, and tests.
+- `cloud/`: server-only API, task state, target backends, and tests.
+- `shared/`: versioned protocol and MessagePack serialization; copy unchanged to both hosts.
+- `scripts/`: separate Edge and Cloud packaging scripts for PowerShell and POSIX shells.
+
+## Quick end-to-end smoke test
+
+Terminal 1:
 
 ```bash
-cd edge
-python app/run_edge.py \
-  --deployment local \
-  --draft_model_path pre_models/path-to-small-model.gguf \
-  --target_model_path pre_models/path-to-large-model.gguf \
-  --max_generated_tokens 40
+python -m pip install -r cloud/requirements.txt
+python -m cloud.app.main --mock
 ```
 
-Use the old cloud/edge HTTP mode only when you need a distributed baseline:
+Terminal 2:
 
 ```bash
-cd edge
-python app/run_edge.py --deployment network --server_url http://127.0.0.1:8000
+python -m pip install -r edge/requirements.txt
+python edge/app/run_edge.py --mock_draft --server_url http://127.0.0.1:8000 --max_generated_tokens 8
 ```
 
-## Key merged files
-
-- `edge/app/run_edge.py`: unified experiment entry.
-- `edge/core/local_models.py`: local draft model and target verifier adapters.
-- `edge/core/channel.py`: `LocalChannel` for in-process calls and `NetworkChannel` for legacy HTTP.
-- `edge/families/speculative/speculative_edge.py`: speculative decoding runner that is deployment-agnostic.
-
-## Notes
-
-- Ubuntu >= 22.04 and CUDA are recommended for real model runs.
-- `edge/install.sh` is the current dependency reference.
-- `cloud/install.sh` and `cloud/README.md` are retained for the legacy FastAPI service.
+See `edge/README.md` and `cloud/README.md` for real-model commands. The former
+single-process target path has been removed from the new runner; `cloud/src/`
+remains temporarily as historical experiment code and is not used by the new API.

@@ -136,7 +136,9 @@ ehthumbs.db
 Thumbs.db
 
 # Model files
-models/
+models/*
+!models/__init__.py
+!models/*.py
 *.gguf
 *.bin
 *.safetensors

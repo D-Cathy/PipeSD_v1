@@ -1,30 +1,27 @@
-﻿import msgpack
+"""Draft-only model adapters for the Edge host."""
+
 import numpy as np
 
 from core.util import softmax
 
 try:
     from llama_cpp import Llama
-except ImportError:  # pragma: no cover - exercised only when llama-cpp is absent
+except ImportError:  # pragma: no cover
     Llama = None
 
 
-def _normalize_probs(probs):
+def _sample_from_probs(probs, seed=None):
     probs = np.asarray(probs, dtype=np.float64).reshape(-1)
     total = probs.sum()
     if total <= 0:
-        return np.full(probs.shape[0], 1.0 / probs.shape[0], dtype=np.float64)
-    return probs / total
-
-
-def _sample_from_probs(probs, seed=None):
-    probs = _normalize_probs(probs)
-    rng = np.random.default_rng(seed)
-    return int(rng.choice(probs.shape[0], p=probs))
+        probs = np.full(probs.shape[0], 1.0 / probs.shape[0])
+    else:
+        probs = probs / total
+    return int(np.random.default_rng(seed).choice(probs.shape[0], p=probs))
 
 
 class MockDraftModel:
-    """Small deterministic draft model for smoke tests without model files."""
+    """Small deterministic draft model for HTTP smoke tests."""
 
     def __init__(self, vocab_size=256):
         self.counter = 0
@@ -47,13 +44,22 @@ class MockDraftModel:
     def reset_kv_cache(self, accept_len=None):
         return None
 
+    def sync_generated_tokens(self, tokens):
+        self.counter = len(tokens)
+
+    def decode(self, tokens):
+        return " ".join(str(token) for token in tokens)
+
+    def is_eos(self, token):
+        return False
+
 
 class LlamaCppDraftModel:
-    """Draft model adapter used by the unified single-server runner."""
+    """llama.cpp small-model adapter used only by Edge."""
 
     def __init__(self, config, exp_cfg):
         if Llama is None:
-            raise RuntimeError("llama-cpp-python is required when --mock_models is not set.")
+            raise RuntimeError("llama-cpp-python is required unless --mock_draft is set.")
         self.config = config
         self.exp_cfg = exp_cfg
         self.model = None
@@ -81,12 +87,10 @@ class LlamaCppDraftModel:
         return list(self.prefix_tokens)
 
     def sample(self):
-        scores = self.model.scores[self.model.n_tokens - 1]
-        probs = softmax(scores)
-        if getattr(self.exp_cfg, "temp", 0.0) == 0:
-            token = int(np.argmax(probs))
-        else:
-            token = _sample_from_probs(probs, seed=self.exp_cfg.seed + self.model.n_tokens)
+        probs = softmax(self.model.scores[self.model.n_tokens - 1])
+        token = int(np.argmax(probs)) if self.exp_cfg.temp == 0 else _sample_from_probs(
+            probs, seed=self.exp_cfg.seed + self.model.n_tokens
+        )
         self.model.eval([token])
         return token, probs
 
@@ -97,121 +101,13 @@ class LlamaCppDraftModel:
         if target_n_tokens < self.model.n_tokens:
             self.model.n_tokens = target_n_tokens
 
-
-class MockTargetVerifier:
-    """Target-model verifier with the same interface as the local real verifier."""
-
-    def __init__(self):
-        self.tasks = {}
-
-    def init_task(self, task_id, tokens):
-        self.tasks[task_id] = {"n_past": len(tokens)}
-        return {"init": "success", "n_past": len(tokens)}
-
-    def verify_tokens(self, data_bytes):
-        payload = msgpack.unpackb(data_bytes, raw=False)
-        tokens = payload.get("tokens", [])
-        task_id = payload.get("task_id")
-        n_past = int(payload.get("n_past", self.tasks.get(task_id, {}).get("n_past", 0)))
-        final_token = (tokens[-1] + 1) if tokens else 1
-        new_n_past = n_past + len(tokens) + 1
-        self.tasks.setdefault(task_id, {})["n_past"] = new_n_past
-        return {
-            "n_accepted": len(tokens),
-            "n_speculative": len(tokens),
-            "final_token": final_token,
-            "n_past": new_n_past,
-        }
-
-    def exit_task(self, task_id):
-        self.tasks.pop(task_id, None)
-        return {"status": "exited", "task_id": task_id}
-
-
-class LlamaCppTargetVerifier:
-    """In-process target model verifier; replaces the old cloud HTTP service."""
-
-    def __init__(self, model_path, ctx_size=4096, n_gpu_layers=-1, threads=1, seed=42):
-        if Llama is None:
-            raise RuntimeError("llama-cpp-python is required when --mock_models is not set.")
-        self.seed = seed
-        self.model = Llama(
-            model_path=model_path,
-            n_threads=threads,
-            n_threads_batch=threads,
-            n_gpu_layers=n_gpu_layers,
-            use_mlock=False,
-            verbose=False,
-            logits_all=True,
-            n_ctx=ctx_size,
-            seed=seed,
-        )
-        self.tasks = {}
-
-    def init_task(self, task_id, tokens):
+    def sync_generated_tokens(self, tokens):
+        """Rebuild draft cache after Cloud rejects or replaces draft tokens."""
         self.model.reset()
-        self.model.eval(tokens)
-        self.tasks[task_id] = {
-            "prefix": list(tokens),
-            "state": self.model.save_state(),
-            "n_past": self.model.n_tokens,
-        }
-        return {"init": "success", "n_past": self.model.n_tokens}
+        self.model.eval(self.prefix_tokens + list(tokens))
 
-    def verify_tokens(self, data_bytes):
-        payload = msgpack.unpackb(data_bytes, raw=False)
-        task_id = payload.get("task_id")
-        task = self.tasks.get(task_id)
-        if task is None:
-            return {"error": f"Task {task_id} was not initialized."}
+    def decode(self, tokens):
+        return self.model.detokenize(list(tokens)).decode("utf-8", errors="replace")
 
-        tokens = list(payload.get("tokens", []))
-        draft_probs = [np.asarray(p, dtype=np.float64) for p in payload.get("probs", [])]
-        n_past = int(payload.get("n_past", task["n_past"]))
-
-        self.model.load_state(task["state"])
-        if not tokens:
-            final_token = self.model.sample(top_k=1, top_p=1.0, temp=0.0)
-            self.model.eval([final_token])
-            task["state"] = self.model.save_state()
-            task["n_past"] = self.model.n_tokens
-            return {"n_accepted": 0, "n_speculative": 0, "final_token": int(final_token), "n_past": task["n_past"]}
-
-        if self.model.n_tokens > n_past:
-            self.model.n_tokens = n_past
-        self.model.eval(tokens)
-        target_scores = self.model.scores[n_past - 1: n_past - 1 + len(tokens)]
-        target_probs = softmax(target_scores)
-
-        n_accepted = 0
-        for idx, token in enumerate(tokens):
-            draft_prob = float(draft_probs[idx][token]) if idx < len(draft_probs) else 0.0
-            target_prob = float(target_probs[idx][token])
-            ratio = target_prob / max(draft_prob, 1e-9)
-            rand_val = np.random.default_rng(self.seed + n_past + idx).random()
-            if ratio >= 1.0 or rand_val < ratio:
-                n_accepted += 1
-            else:
-                break
-
-        self.model.n_tokens = n_past + n_accepted
-        if n_accepted < len(tokens):
-            diff_probs = target_probs[n_accepted] - draft_probs[n_accepted]
-            final_token = _sample_from_probs(np.maximum(diff_probs, 0.0), seed=self.seed + n_past + n_accepted)
-        else:
-            final_token = self.model.sample(top_k=1, top_p=1.0, temp=0.0)
-
-        self.model.eval([final_token])
-        task["state"] = self.model.save_state()
-        task["n_past"] = self.model.n_tokens
-        return {
-            "n_accepted": n_accepted,
-            "n_speculative": len(tokens),
-            "final_token": int(final_token),
-            "n_past": task["n_past"],
-        }
-
-    def exit_task(self, task_id):
-        self.tasks.pop(task_id, None)
-        return {"status": "exited", "task_id": task_id}
-
+    def is_eos(self, token):
+        return int(token) == int(self.model.token_eos())
