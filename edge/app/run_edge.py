@@ -5,10 +5,11 @@ import os
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from core.channel import LocalChannel, NetworkChannel
+from core.channel import NetworkChannel
 from core.config import ChannelConfig, ExperimentConfig, ModelConfig, SpeculativeConfig
-from core.local_models import MockDraftModel, MockTargetVerifier, LlamaCppDraftModel, LlamaCppTargetVerifier
+from core.local_models import MockDraftModel, LlamaCppDraftModel
 from core.metrics import MetricsCollector
 from families.speculative.speculative_edge import SpeculativeEdgeRole
 from families.speculative.strategy import DPStrategy
@@ -32,12 +33,8 @@ def load_humaneval_data(data_path, start_idx, end_idx):
             prompt = item.get("prompt")
             if prompt is None:
                 continue
-            raw_task_id = item.get("task_id", item.get("question_id", idx))
-            try:
-                task_id = int(str(raw_task_id).split("/")[-1])
-            except Exception:
-                task_id = raw_task_id
-            samples.append({"prompt": prompt.strip(), "task_id": task_id})
+            task_id = item.get("task_id", item.get("question_id", idx))
+            samples.append({"prompt": prompt, "task_id": task_id})
 
     sliced_samples = samples[start_idx: end_idx + 1]
     print(f"[Data] Loaded {len(sliced_samples)} samples.")
@@ -45,21 +42,19 @@ def load_humaneval_data(data_path, start_idx, end_idx):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="PipeSD unified speculative decoding runner")
+    parser = argparse.ArgumentParser(description="PipeSD Edge speculative decoding client")
     parser.add_argument("--algorithm", type=str, default="pipesd", choices=["cloud_only", "pipesd"])
-    parser.add_argument("--deployment", type=str, default="local", choices=["local", "network"], help="local runs draft and target models on one server; network keeps the legacy HTTP split")
-    parser.add_argument("--simulation", action="store_true", help="Compatibility alias for --deployment local --mock_models")
-    parser.add_argument("--mock_models", action="store_true", help="Use deterministic mock models for a smoke test")
+    parser.add_argument("--mock_draft", action="store_true", help="Use a deterministic draft model against a mock or real Cloud service")
     parser.add_argument("--draft_model_path", type=str, default="")
-    parser.add_argument("--target_model_path", type=str, default="")
     parser.add_argument("--draft_n_gpu_layers", type=int, default=0)
-    parser.add_argument("--target_n_gpu_layers", type=int, default=-1)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--ctx_size", type=int, default=2048)
     parser.add_argument("--server_url", type=str, default="http://127.0.0.1:8000")
+    parser.add_argument("--server_timeout_s", type=float, default=120.0, help="HTTP timeout for Cloud model initialization and verification")
     parser.add_argument("--bandwidth_MBps", type=float, default=2.5)
     parser.add_argument("--base_latency_c", type=float, default=0.05)
     parser.add_argument("--max_generated_tokens", type=int, default=30)
+    parser.add_argument("--gamma", type=int, default=5, help="Maximum speculative tokens per Cloud verification")
     parser.add_argument("--start_index_of_sample", type=int, default=0)
     parser.add_argument("--end_index_of_sample", type=int, default=2)
     parser.add_argument("--data_path", type=str, default="data/humaneval.jsonl")
@@ -67,27 +62,8 @@ def parse_args():
 
 
 def build_runtime(args, chan_cfg, model_cfg, exp_cfg):
-    if args.simulation:
-        args.deployment = "local"
-        args.mock_models = True
-
-    if args.deployment == "local":
-        print("[Mode] Unified local server mode: draft model and target model run in one process.")
-        if args.mock_models:
-            return MockDraftModel(), LocalChannel(chan_cfg, MockTargetVerifier())
-        if not args.draft_model_path or not args.target_model_path:
-            raise ValueError("Real local mode requires both --draft_model_path and --target_model_path.")
-        target_verifier = LlamaCppTargetVerifier(
-            model_path=args.target_model_path,
-            ctx_size=args.ctx_size,
-            n_gpu_layers=args.target_n_gpu_layers,
-            threads=args.threads,
-            seed=exp_cfg.seed,
-        )
-        return LlamaCppDraftModel(model_cfg, exp_cfg), LocalChannel(chan_cfg, target_verifier)
-
-    print("[Mode] Legacy network mode: draft runner calls an HTTP target-model service.")
-    draft_model = MockDraftModel() if args.mock_models else LlamaCppDraftModel(model_cfg, exp_cfg)
+    print("[Mode] Edge/Cloud mode: this process loads only the draft model.")
+    draft_model = MockDraftModel() if args.mock_draft else LlamaCppDraftModel(model_cfg, exp_cfg)
     return draft_model, NetworkChannel(chan_cfg)
 
 
@@ -96,6 +72,7 @@ def main():
 
     chan_cfg = ChannelConfig(
         server_url=args.server_url,
+        timeout_s=args.server_timeout_s,
         bandwidth_MBps=args.bandwidth_MBps,
         base_latency_c=args.base_latency_c,
     )
@@ -105,7 +82,7 @@ def main():
         threads=args.threads,
         ctx_size=args.ctx_size,
     )
-    spec_cfg = SpeculativeConfig()
+    spec_cfg = SpeculativeConfig(gamma=args.gamma)
     exp_cfg = ExperimentConfig(
         algorithm=args.algorithm,
         max_generated_tokens=args.max_generated_tokens,
@@ -141,6 +118,7 @@ def main():
     print("\n[Main] Evaluation finished")
     channel.close()
     print("[Main] Results saved to exp/results/benchmark.json")
+    print("[Main] HumanEval samples saved to exp/results/humaneval_samples.jsonl")
 
 
 if __name__ == "__main__":

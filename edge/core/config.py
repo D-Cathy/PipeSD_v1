@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 @dataclass
 class ChannelConfig:
     server_url: str = "http://127.0.0.1:8000"
-    timeout_s: int = 10
+    timeout_s: float = 120.0
     bandwidth_MBps: float = 2.5
     base_latency_c: float = 0.05
     use_env_proxy: bool = False
