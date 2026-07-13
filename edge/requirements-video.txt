@@ -1,0 +1,10 @@
+-r requirements.txt
+torch>=2.1.0
+transformers>=4.57.0
+accelerate>=0.30.0
+# Either decord or OpenCV may provide video decoding. OpenCV is the portable
+# fallback on Python versions for which decord has no wheel.
+decord>=0.6.0; python_version < "3.13"
+opencv-python>=4.9.0.80
+Pillow>=10.0.0
+pyarrow>=14.0.0

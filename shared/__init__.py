@@ -8,6 +8,7 @@ from .protocol import (
     VerificationResponse,
 )
 from .version import PROTOCOL_VERSION
+from .video_protocol import VideoInitRequest, VideoProposalRequest, VideoVerificationResponse
 
 __all__ = [
     "FinalizeRequest",
@@ -16,4 +17,7 @@ __all__ = [
     "ProposalRequest",
     "ProtocolError",
     "VerificationResponse",
+    "VideoInitRequest",
+    "VideoProposalRequest",
+    "VideoVerificationResponse",
 ]
