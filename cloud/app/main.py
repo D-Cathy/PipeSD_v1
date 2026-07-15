@@ -98,6 +98,10 @@ def main():
     parser = argparse.ArgumentParser(description="PipeSD Cloud target verifier")
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--target-model-path", default=os.environ.get("PIPE_SD_TARGET_MODEL", ""))
+    parser.add_argument("--target-n-gpu-layers", type=int, default=-1,
+                        help="llama.cpp layers offloaded to the selected GPU; -1 means all")
+    parser.add_argument("--target-ctx-size", type=int, default=4096)
+    parser.add_argument("--target-threads", type=int, default=1)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--video-backend-factory", help="Optional module:callable returning a VideoTargetBackend")
@@ -108,7 +112,10 @@ def main():
     args = parser.parse_args()
     if not args.mock and not args.target_model_path:
         parser.error("--target-model-path is required unless --mock is used")
-    backend = MockTargetBackend() if args.mock else LlamaCppTargetBackend(args.target_model_path)
+    backend = MockTargetBackend() if args.mock else LlamaCppTargetBackend(
+        args.target_model_path, ctx_size=args.target_ctx_size,
+        n_gpu_layers=args.target_n_gpu_layers, threads=args.target_threads,
+    )
     if args.video_backend_factory and args.video_target_model_path:
         parser.error("Use either --video-backend-factory or --video-target-model-path, not both")
     if args.video_backend_factory:
