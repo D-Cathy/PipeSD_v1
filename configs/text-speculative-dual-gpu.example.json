@@ -1,0 +1,21 @@
+{
+  "common": {
+    "server_url": "http://127.0.0.1:8000",
+    "server_timeout_s": 1200,
+    "bandwidth_mbps": 0,
+    "base_latency_s": 0,
+    "chunk_size": 4,
+    "max_new_tokens": 16,
+    "output_jsonl": "edge/exp/results/text_results.jsonl"
+  },
+  "text": {
+    "draft_model_path": "/path/to/deepseek-coder-1.3b-instruct.Q4_K_M.gguf",
+    "draft_n_gpu_layers": -1,
+    "device": "cuda:0",
+    "threads": 4,
+    "ctx_size": 2048,
+    "data_path": "edge/data/humaneval.jsonl",
+    "start_index": 0,
+    "end_index": 9
+  }
+}

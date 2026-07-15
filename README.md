@@ -21,6 +21,7 @@ Cloud: FastAPI -> task manager -> target verifier -> GPU/energy metrics
 - `docs/video-vive-integration.md`: incremental VIVE video-to-text integration contract.
 - `docs/collaboration-runtime.md`: public Node, Strategy, Engine, and Channel contracts.
 - `docs/run-text-video-speculative-zh.md`: 中文文本/视频端云运行手册与测试命令。
+- `docs/unified-edge-runner-zh.md`: 统一入口、文本双 GPU 模拟与视频模型复用说明。
 
 The video family is isolated under `edge/families/video_speculative/` and
 `cloud/core/video_tasks.py`; it reuses the production network channel without

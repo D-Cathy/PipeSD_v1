@@ -1,0 +1,22 @@
+{
+  "common": {
+    "server_url": "http://127.0.0.1:8000",
+    "server_timeout_s": 1200,
+    "bandwidth_mbps": 0,
+    "base_latency_s": 0,
+    "chunk_size": 4,
+    "max_new_tokens": 16,
+    "output_jsonl": "edge/exp/results/video_results.jsonl"
+  },
+  "video": {
+    "draft_model_path": "/path/to/Qwen3-VL-2B-Instruct",
+    "device": "cuda:0",
+    "input_jsonl": "configs/video-tasks.example.jsonl",
+    "max_frames": 8,
+    "top_k": 16,
+    "rlt_diff_threshold": 0.001,
+    "rlt_downsample_size": 32,
+    "verification_rule": "js",
+    "js_threshold": 0.4
+  }
+}

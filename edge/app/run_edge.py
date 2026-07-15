@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -13,6 +14,8 @@ from core.local_models import MockDraftModel, LlamaCppDraftModel
 from core.metrics import MetricsCollector
 from families.speculative.speculative_edge import SpeculativeEdgeRole
 from families.speculative.strategy import DPStrategy
+from edge.app.result_io import append_jsonl, result_record
+from edge.app.run_config import add_common_arguments, parse_args_with_config
 
 
 def load_humaneval_data(data_path, start_idx, end_idx):
@@ -41,24 +44,24 @@ def load_humaneval_data(data_path, start_idx, end_idx):
     return sliced_samples
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="PipeSD Edge speculative decoding client")
+    add_common_arguments(parser)
     parser.add_argument("--algorithm", type=str, default="pipesd", choices=["cloud_only", "pipesd"])
-    parser.add_argument("--mock_draft", action="store_true", help="Use a deterministic draft model against a mock or real Cloud service")
-    parser.add_argument("--draft_model_path", type=str, default="")
-    parser.add_argument("--draft_n_gpu_layers", type=int, default=0)
+    parser.add_argument("--mock-draft", "--mock_draft", dest="mock_draft", action="store_true", help="Use a deterministic draft model against a mock or real Cloud service")
+    parser.add_argument("--draft-n-gpu-layers", "--draft_n_gpu_layers", dest="draft_n_gpu_layers", type=int, default=0)
     parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--ctx_size", type=int, default=2048)
-    parser.add_argument("--server_url", type=str, default="http://127.0.0.1:8000")
-    parser.add_argument("--server_timeout_s", type=float, default=120.0, help="HTTP timeout for Cloud model initialization and verification")
-    parser.add_argument("--bandwidth_MBps", type=float, default=2.5)
-    parser.add_argument("--base_latency_c", type=float, default=0.05)
-    parser.add_argument("--max_generated_tokens", type=int, default=30)
-    parser.add_argument("--gamma", type=int, default=5, help="Maximum speculative tokens per Cloud verification")
-    parser.add_argument("--start_index_of_sample", type=int, default=0)
-    parser.add_argument("--end_index_of_sample", type=int, default=2)
-    parser.add_argument("--data_path", type=str, default="data/humaneval.jsonl")
-    return parser.parse_args()
+    parser.add_argument("--ctx-size", "--ctx_size", dest="ctx_size", type=int, default=2048)
+    parser.add_argument("--start-index", "--start_index_of_sample", dest="start_index", type=int, default=0)
+    parser.add_argument("--end-index", "--end_index_of_sample", dest="end_index", type=int, default=2)
+    parser.add_argument("--data-path", "--data_path", dest="data_path", type=str, default="data/humaneval.jsonl")
+    parser.set_defaults(
+        server_url="http://127.0.0.1:8000", server_timeout_s=120.0,
+        bandwidth_mbps=2.5, base_latency_s=0.05, draft_model_path="",
+        device="cuda:0", chunk_size=5, max_new_tokens=30,
+        output_jsonl="edge/exp/results/text_results.jsonl",
+    )
+    return parse_args_with_config(parser, "text", argv)
 
 
 def build_runtime(args, chan_cfg, model_cfg, exp_cfg):
@@ -67,14 +70,14 @@ def build_runtime(args, chan_cfg, model_cfg, exp_cfg):
     return draft_model, NetworkChannel(chan_cfg)
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
 
     chan_cfg = ChannelConfig(
         server_url=args.server_url,
         timeout_s=args.server_timeout_s,
-        bandwidth_MBps=args.bandwidth_MBps,
-        base_latency_c=args.base_latency_c,
+        bandwidth_MBps=args.bandwidth_mbps,
+        base_latency_c=args.base_latency_s,
     )
     model_cfg = ModelConfig(
         model_path=args.draft_model_path,
@@ -82,13 +85,13 @@ def main():
         threads=args.threads,
         ctx_size=args.ctx_size,
     )
-    spec_cfg = SpeculativeConfig(gamma=args.gamma)
+    spec_cfg = SpeculativeConfig(gamma=args.chunk_size)
     exp_cfg = ExperimentConfig(
         algorithm=args.algorithm,
-        max_generated_tokens=args.max_generated_tokens,
+        max_generated_tokens=args.max_new_tokens,
         data_path=args.data_path,
-        start_index=args.start_index_of_sample,
-        end_index=args.end_index_of_sample,
+        start_index=args.start_index,
+        end_index=args.end_index,
     )
 
     samples = load_humaneval_data(exp_cfg.data_path, exp_cfg.start_index, exp_cfg.end_index)
@@ -114,11 +117,21 @@ def main():
         print(f"\n[Main] Processing task: {task_id}")
         collector.reset_sample()
         runner.process_task(task_id=task_id, prompt=prompt)
+        record = result_record(runner.last_result, {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "modality": "text", "task_type": "humaneval",
+            "draft_model_path": os.path.abspath(args.draft_model_path) if args.draft_model_path else None,
+            "device": args.device, "server_url": args.server_url,
+            "bandwidth_mbps": args.bandwidth_mbps, "base_latency_s": args.base_latency_s,
+            "chunk_size": args.chunk_size, "max_new_tokens": args.max_new_tokens,
+        })
+        append_jsonl(args.output_jsonl, record)
 
     print("\n[Main] Evaluation finished")
     channel.close()
     print("[Main] Results saved to exp/results/benchmark.json")
     print("[Main] HumanEval samples saved to exp/results/humaneval_samples.jsonl")
+    print(f"[Main] Unified task results saved to {args.output_jsonl}")
 
 
 if __name__ == "__main__":
