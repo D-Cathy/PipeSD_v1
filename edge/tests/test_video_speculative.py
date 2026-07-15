@@ -8,6 +8,8 @@ from edge.families.video_speculative.backends import MockVideoDraftBackend
 from edge.families.video_speculative.config import VideoSpeculativeConfig
 from edge.families.video_speculative.video_edge import VideoSpeculativeEdgeRole
 from shared.serialization import unpack_message
+from edge.families.video_speculative.strategy import VideoConfidenceStrategy
+from pipesd.runtime import Action, CollaborationContext, Result, Task
 
 
 class InProcessVideoChannel:
@@ -32,6 +34,16 @@ class InProcessVideoChannel:
 
 
 class VideoSpeculativeEdgeTests(unittest.TestCase):
+    def test_confidence_strategy_returns_framework_decisions(self):
+        strategy = VideoConfidenceStrategy(0.9, 0.75)
+        task = Task("video-strategy", "video")
+        high = strategy.decide(CollaborationContext(task, observations={"average_confidence": 0.95}))
+        mid = strategy.decide(CollaborationContext(task, observations={"average_confidence": 0.8}))
+        low = strategy.decide(CollaborationContext(task, observations={"average_confidence": 0.2}))
+        self.assertEqual((high.action, mid.action, low.action), (
+            Action.ACCEPT_LOCAL, Action.SELF_VERIFY, Action.SEND_TO_CLOUD,
+        ))
+
     def test_confidence_routing_and_cloud_override(self):
         draft = MockVideoDraftBackend([0.95, 0.95, 0.2, 0.2, 0.95, 0.95])
         role = VideoSpeculativeEdgeRole(
@@ -46,6 +58,16 @@ class VideoSpeculativeEdgeTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["route_counts"]["cloud"], 1)
         self.assertGreater(result["metrics"]["bytes_sent"], 0)
         self.assertGreater(result["metrics"]["bytes_received"], 0)
+
+    def test_public_engine_run_returns_result(self):
+        role = VideoSpeculativeEdgeRole(
+            MockVideoDraftBackend([0.95, 0.95]), InProcessVideoChannel(),
+            VideoSpeculativeConfig(chunk_gamma=2, max_new_tokens=2),
+        )
+        result = role.run(Task("video-sdk", "video", "sample.mp4", "describe"))
+        self.assertIsInstance(result, Result)
+        self.assertEqual(result.task_id, "video-sdk")
+        self.assertEqual(result.metadata["tokens"], [10, 11])
 
 
 if __name__ == "__main__":

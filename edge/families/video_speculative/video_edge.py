@@ -7,23 +7,52 @@ import uuid
 from shared.protocol import FinalizeRequest, ProtocolError
 from shared.serialization import CONTENT_TYPE, pack_message
 from shared.video_protocol import VideoInitRequest, VideoProposalRequest, VideoVerificationResponse
+from pipesd.runtime.node import HTTPNode, ensure_node
+from pipesd.runtime import Action, CollaborationContext, Engine, Result, Task
+from .strategy import strategy_from_config
 
 
-class VideoSpeculativeEdgeRole:
-    def __init__(self, draft_backend, channel, config, model_family="qwen3_vl"):
-        self.draft = draft_backend
+class VideoSpeculativeEdgeRole(Engine):
+    def __init__(self, draft_backend, channel, config, model_family="qwen3_vl", strategy=None):
+        self.edge_node = ensure_node(draft_backend, node_id="video-draft", location="edge")
+        self.draft = getattr(self.edge_node, "backend", draft_backend)
         self.channel = channel
+        self.cloud_node = HTTPNode(
+            channel.config.server_url,
+            channel,
+            node_id="video-target",
+            endpoints={
+                "init": "/video/init",
+                "propose": "/video/propose",
+                "exit": "/video/exit",
+            },
+        )
         self.config = config
         self.model_family = model_family
+        self.strategy = strategy or strategy_from_config(config)
         self.transport = None
+
+    def run(self, task):
+        if not isinstance(task, Task):
+            raise TypeError("VideoSpeculativeEdgeRole.run expects a pipesd.Task.")
+        if task.modality != "video":
+            raise ValueError(f"Video speculative engine cannot run modality {task.modality!r}.")
+        raw = self.process_task(task.task_id, task.input_data, task.prompt)
+        return Result(
+            task_id=task.task_id,
+            output=raw["text"],
+            stop_reason=raw.get("stop_reason", "max_tokens"),
+            metrics=dict(raw.get("metrics", {})),
+            metadata={"tokens": list(raw.get("tokens", [])), "cloud_queries": raw.get("cloud_queries", 0)},
+        )
 
     def _request(self, endpoint, message):
         payload = pack_message(message)
         started = time.perf_counter()
-        result = self.channel.submit(
-            f"{self.channel.config.server_url.rstrip('/')}{endpoint}",
-            payload, {"Content-Type": CONTENT_TYPE},
-        ).result()
+        operation = endpoint.rsplit("/", 1)[-1]
+        result = self.cloud_node.invoke(
+            operation, payload, headers={"Content-Type": CONTENT_TYPE},
+        )
         elapsed = time.perf_counter() - started
         if self.transport is not None:
             self.transport["bytes_sent"] += len(payload)
@@ -41,12 +70,13 @@ class VideoSpeculativeEdgeRole:
 
     def process_task(self, task_id, video_path, prompt):
         total_started = time.perf_counter()
+        task = Task(task_id, "video", input_data=video_path, prompt=prompt)
         self.transport = {
             "bytes_sent": 0, "bytes_received": 0,
             "request_latency_s": {}, "request_count": {},
         }
         initialize_started = time.perf_counter()
-        evidence = self.draft.initialize(video_path, prompt)
+        evidence = self.edge_node.invoke("initialize", video_path, prompt)
         edge_initialize_s = time.perf_counter() - initialize_started
         init = self._request("/video/init", VideoInitRequest(
             task_id=task_id, prompt=prompt, model_family=self.model_family,
@@ -69,24 +99,33 @@ class VideoSpeculativeEdgeRole:
         model_cache_length = 0
 
         try:
-            while len(output) < self.config.max_new_tokens and not self.draft.is_finished():
+            while len(output) < self.config.max_new_tokens and not self.edge_node.invoke("is_finished"):
                 remaining = self.config.max_new_tokens - len(output)
                 draft_started = time.perf_counter()
-                chunk = self.draft.draft_chunk(min(self.config.chunk_gamma, remaining))
+                chunk = self.edge_node.invoke("draft_chunk", min(self.config.chunk_gamma, remaining))
                 edge_draft_s += time.perf_counter() - draft_started
                 if not chunk:
                     break
                 avg_confidence = sum(item.confidence for item in chunk) / len(chunk)
-                if avg_confidence >= self.config.high_conf_threshold:
+                decision = self.strategy.decide(CollaborationContext(
+                    task,
+                    state={"generated_tokens": len(output), "remaining_tokens": remaining},
+                    observations={
+                        "average_confidence": avg_confidence,
+                        "chunk_size": len(chunk),
+                    },
+                ))
+                if decision.action == Action.ACCEPT_LOCAL:
                     route_counts["edge_high"] += 1
                     accepted = [item.token_id for item in chunk]
                     output.extend(accepted)
                     committed_for_cloud.extend(accepted)
-                    self.draft.commit_tokens(accepted)
+                    self.edge_node.invoke("commit_tokens", accepted)
                     continue
                 verify_started = time.perf_counter()
                 self_verified = (
-                    avg_confidence >= self.config.mid_conf_threshold and self.draft.self_verify(chunk)
+                    decision.action == Action.SELF_VERIFY
+                    and self.edge_node.invoke("self_verify", chunk)
                 )
                 edge_self_verify_s += time.perf_counter() - verify_started
                 if self_verified:
@@ -94,7 +133,7 @@ class VideoSpeculativeEdgeRole:
                     accepted = [item.token_id for item in chunk]
                     output.extend(accepted)
                     committed_for_cloud.extend(accepted)
-                    self.draft.commit_tokens(accepted)
+                    self.edge_node.invoke("commit_tokens", accepted)
                     continue
 
                 request_id = uuid.uuid4().hex
@@ -116,8 +155,8 @@ class VideoSpeculativeEdgeRole:
                 if response.override_token is not None:
                     actual.append(response.override_token)
                 output.extend(actual)
-                self.draft.commit_tokens(actual)
-                self.draft.apply_cloud_result(response.accepted_count, response.override_token)
+                self.edge_node.invoke("commit_tokens", actual)
+                self.edge_node.invoke("apply_cloud_result", response.accepted_count, response.override_token)
                 revision = response.revision
                 cache_position = response.cache_position
                 sequence_no += 1
@@ -132,11 +171,11 @@ class VideoSpeculativeEdgeRole:
             tokens = output[:self.config.max_new_tokens]
             total_s = time.perf_counter() - total_started
             backend_metrics = (
-                self.draft.runtime_metrics() if hasattr(self.draft, "runtime_metrics") else {}
+                self.edge_node.metrics()
             )
             return {
                 "task_id": task_id, "tokens": output[:self.config.max_new_tokens],
-                "text": self.draft.decode(tokens),
+                "text": self.edge_node.invoke("decode", tokens),
                 "cloud_queries": cloud_queries,
                 "metrics": {
                     "generated_tokens": len(tokens),
@@ -172,3 +211,7 @@ class VideoSpeculativeEdgeRole:
             except Exception:
                 if not handling_error:
                     raise
+
+
+class VideoSpeculativeEngine(VideoSpeculativeEdgeRole):
+    """Public name for the video orchestration engine."""

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from shared.protocol import ProtocolError, error_payload, success_payload
+from pipesd.runtime.node import ensure_node
 
 
 @dataclass
@@ -20,7 +21,8 @@ class TaskState:
 
 class TaskManager:
     def __init__(self, backend, ttl_s=600, seed=42):
-        self.backend = backend
+        self.backend_node = ensure_node(backend, node_id="text-target", location="cloud")
+        self.backend = getattr(self.backend_node, "backend", backend)
         self.ttl_s = ttl_s
         self.seed = seed
         self.tasks = {}
@@ -39,7 +41,7 @@ class TaskManager:
         task_id = payload["task_id"]
         tokens = list(payload.get("tokens", []))
         with self.model_lock:
-            model_state = self.backend.init(tokens)
+            model_state = self.backend_node.invoke("init", tokens)
         with self.lock:
             self.tasks[task_id] = TaskState(model_state=model_state, n_past=len(tokens))
         return success_payload(status="initialized", task_id=task_id, n_past=len(tokens), revision=0)
@@ -59,7 +61,8 @@ class TaskManager:
                 raise ProtocolError("Stale proposal revision or n_past.")
             task.last_seen = time.monotonic()
             with self.model_lock:
-                accepted, final_token, n_past = self.backend.verify(
+                accepted, final_token, n_past = self.backend_node.invoke(
+                    "verify",
                     task.model_state, list(payload["tokens"]), list(payload["probs"]), self.seed
                 )
             task.n_past = n_past
