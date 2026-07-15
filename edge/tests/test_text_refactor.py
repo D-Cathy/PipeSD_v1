@@ -11,6 +11,7 @@ from core.local_models import MockDraftModel
 from families.speculative.speculative_edge import SpeculativeEdgeRole
 from families.speculative.strategy import DPStrategy
 from shared.protocol import ProtocolError, VerificationResponse
+from pipesd.runtime import Action, CollaborationContext, Result, Task
 
 
 class TextRefactorTests(unittest.TestCase):
@@ -21,6 +22,11 @@ class TextRefactorTests(unittest.TestCase):
         )
         self.assertFalse(strategy.check_verify_condition(3))
         self.assertTrue(strategy.check_verify_condition(4))
+        tail = strategy.decide(CollaborationContext(
+            Task("text-1", "text"),
+            state={"pending_length": 1, "draft_eos": True},
+        ))
+        self.assertEqual(tail.action, Action.SEND_TO_CLOUD)
 
     def test_metrics_writes_official_completion_jsonl(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,6 +86,41 @@ class TextRefactorTests(unittest.TestCase):
             role.process_task("HumanEval/0", "def f():")
             self.assertEqual(collector.verify_spec_lengths, [3, 3])
             self.assertEqual(collector.current_metrics["output_length"], 8)
+
+    def test_public_engine_run_returns_result(self):
+        class Channel:
+            config = SimpleNamespace(server_url="http://cloud")
+
+            def submit(self, endpoint_url, data, headers=None, tag=None):
+                from shared.serialization import unpack_message
+                future = Future()
+                payload = unpack_message(data)
+                if endpoint_url.endswith("/init"):
+                    future.set_result({"n_past": 1})
+                elif endpoint_url.endswith("/exit"):
+                    future.set_result({"status": "exited"})
+                else:
+                    future.set_result({
+                        "protocol_version": "1.0", "task_id": payload["task_id"],
+                        "request_id": payload["request_id"], "sequence_no": payload["sequence_no"],
+                        "revision": 1, "n_accepted": len(payload["tokens"]),
+                        "n_speculative": len(payload["tokens"]), "final_token": None, "n_past": 4,
+                    })
+                return future
+
+            def drain_tag(self, tag):
+                return []
+
+        with tempfile.TemporaryDirectory() as directory:
+            role = SpeculativeEdgeRole(
+                MockDraftModel(), Channel(), DPStrategy(SimpleNamespace(gamma=2), SimpleNamespace()),
+                MetricsCollector(directory, "benchmark.json"), SimpleNamespace(),
+                SimpleNamespace(max_generated_tokens=2, algorithm="pipesd"),
+            )
+            result = role.run(Task("sdk-text", "text", prompt="def f():"))
+            self.assertIsInstance(result, Result)
+            self.assertEqual(result.task_id, "sdk-text")
+            self.assertEqual(len(result.metadata["tokens"]), 2)
 
 
 if __name__ == "__main__":

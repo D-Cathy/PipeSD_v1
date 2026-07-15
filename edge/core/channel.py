@@ -5,11 +5,16 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
 
+from pipesd.runtime.channel import Channel
 
-class BaseChannel(ABC):
+
+class BaseChannel(Channel, ABC):
     @abstractmethod
     def submit(self, endpoint_url: str, data: bytes, headers: dict = None, tag: str = None):
         pass
+
+    def request(self, endpoint, payload, headers=None, tag=None):
+        return self.submit(endpoint, payload, headers=headers, tag=tag).result()
 
     @abstractmethod
     def drain_tag(self, tag: str):
@@ -60,6 +65,19 @@ class NetworkChannel(BaseChannel):
 
     def drain_tag(self, tag):
         return []
+
+    def health(self):
+        try:
+            timeout = getattr(self.config, "timeout_s", 120)
+            response = self.session.get(
+                f"{self.config.server_url.rstrip('/')}/health",
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result if isinstance(result, dict) else {"status": "ok"}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
 
     def close(self):
         self.executor.shutdown(wait=True)

@@ -19,6 +19,8 @@ Cloud: FastAPI -> task manager -> target verifier -> GPU/energy metrics
 - `shared/`: versioned protocol and MessagePack serialization; copy unchanged to both hosts.
 - `scripts/`: separate Edge and Cloud packaging scripts for PowerShell and POSIX shells.
 - `docs/video-vive-integration.md`: incremental VIVE video-to-text integration contract.
+- `docs/collaboration-runtime.md`: public Node, Strategy, Engine, and Channel contracts.
+- `docs/run-text-video-speculative-zh.md`: 中文文本/视频端云运行手册与测试命令。
 
 The video family is isolated under `edge/families/video_speculative/` and
 `cloud/core/video_tasks.py`; it reuses the production network channel without

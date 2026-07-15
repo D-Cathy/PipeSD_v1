@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any
-from core.config import ModelConfig
+from edge.core.config import ModelConfig
 
 class BaseInferenceRole(ABC):
     """

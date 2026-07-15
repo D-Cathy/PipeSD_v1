@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from shared.protocol import ProtocolError, success_payload
+from pipesd.runtime.node import ensure_node
 
 
 @dataclass
@@ -20,7 +21,8 @@ class VideoTaskState:
 
 class VideoTaskManager:
     def __init__(self, backend, ttl_s=600):
-        self.backend = backend
+        self.backend_node = ensure_node(backend, node_id="video-target", location="cloud")
+        self.backend = getattr(self.backend_node, "backend", backend)
         self.ttl_s = ttl_s
         self.tasks = {}
         self.lock = threading.RLock()
@@ -32,14 +34,15 @@ class VideoTaskManager:
             expired = [key for key, task in self.tasks.items() if task.last_seen < cutoff]
             for key in expired:
                 task = self.tasks.pop(key)
-                self.backend.close_task(task.backend_state)
+                self.backend_node.invoke("close_task", task.backend_state)
         return len(expired)
 
     def init_task(self, payload):
         task_id = payload["task_id"]
         started = time.perf_counter()
         with self.model_lock:
-            backend_state, cache_position = self.backend.init_task(
+            backend_state, cache_position = self.backend_node.invoke(
+                "init_task",
                 payload["prompt"], payload["model_family"],
                 payload["evidence"], payload.get("generation", {}),
             )
@@ -47,7 +50,7 @@ class VideoTaskManager:
         with self.lock:
             previous = self.tasks.pop(task_id, None)
             if previous is not None:
-                self.backend.close_task(previous.backend_state)
+                self.backend_node.invoke("close_task", previous.backend_state)
             self.tasks[task_id] = VideoTaskState(backend_state, int(cache_position))
         return success_payload(
             modality="video_text", status="initialized", task_id=task_id,
@@ -73,9 +76,11 @@ class VideoTaskManager:
             task.last_seen = time.monotonic()
             started = time.perf_counter()
             with self.model_lock:
-                accepted, override, cache_position, divergences = self.backend.verify(task.backend_state, payload)
+                accepted, override, cache_position, divergences = self.backend_node.invoke(
+                    "verify", task.backend_state, payload,
+                )
             cloud_compute_s = time.perf_counter() - started
-            backend_metrics = self.backend.task_metrics(task.backend_state)
+            backend_metrics = self.backend_node.invoke("task_metrics", task.backend_state)
             task.cache_position = int(cache_position)
             task.revision += 1
             task.next_sequence_no += 1
@@ -94,5 +99,5 @@ class VideoTaskManager:
         with self.lock:
             task = self.tasks.pop(task_id, None)
         if task is not None:
-            self.backend.close_task(task.backend_state)
+            self.backend_node.invoke("close_task", task.backend_state)
         return success_payload(modality="video_text", status="exited", task_id=task_id, existed=task is not None)
